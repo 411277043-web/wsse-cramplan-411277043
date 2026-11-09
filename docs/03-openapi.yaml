@@ -1,0 +1,355 @@
+openapi: 3.1.0
+info:
+  title: CramPlan API
+  version: 0.1.0
+  description: |
+    期末考讀書排程（Design Only，尚未實作）。
+    每天只安排一科：考試日期晚於當天、且最早考的科目（BR-06）。
+    Method、Path、Status Code 對應 02-api-design.md；驗證規則對應 01-requirements.md 的 Business Rules。
+
+servers:
+  - url: http://127.0.0.1:8000/api/v1
+    description: Local development
+
+tags:
+  - name: exams
+    description: 考試
+  - name: schedules
+    description: 產生讀書排程
+  - name: study-tasks
+    description: 每日讀書任務
+
+paths:
+  /exams:
+    post:
+      tags: [exams]
+      operationId: createExam
+      summary: Create an exam
+      description: 登錄一科考試。（FR-01；BR-01～BR-03）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExamCreate'
+            example:
+              subject: 物理
+              exam_date: '2027-01-09'
+      responses:
+        '201':
+          description: Exam created
+          headers:
+            Location:
+              description: 新考試的 URL，例如 /api/v1/exams/1
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Exam'
+              example:
+                id: 1
+                subject: 物理
+                exam_date: '2027-01-09'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      tags: [exams]
+      operationId: listExams
+      summary: List exams
+      description: 查看已登錄的考試，依考試日期由早到晚排列；同日依 id 排列。（FR-02）
+      responses:
+        '200':
+          description: Exam list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Exam'
+
+  /schedules:
+    post:
+      tags: [schedules]
+      operationId: generateSchedule
+      summary: Generate or regenerate the study schedule
+      description: |
+        依規則產生從 start_date 到最晚一科考試前一天的讀書任務，每天一科。（FR-03、FR-06）
+        - 刪除 start_date 當天及之後的 PENDING 任務後重新安排（BR-07）
+        - 保留所有 DONE 任務；已有 DONE 任務的日子不再安排（BR-08）
+        - 每天安排「考試日期晚於當天、且最早考」的科目；同日考試依 id 小者優先（BR-06）
+        - 每筆任務附上該科漏讀天數（BR-09）
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleRequest'
+            example:
+              start_date: '2027-01-07'
+      responses:
+        '200':
+          description: Schedule generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResult'
+              example:
+                start_date: '2027-01-07'
+                end_date: '2027-01-12'
+                tasks:
+                  - id: 9
+                    exam_id: 1
+                    subject: 物理
+                    study_date: '2027-01-07'
+                    exam_date: '2027-01-09'
+                    status: PENDING
+                    days_until_exam: 2
+                    missed_days: 1
+                  - id: 10
+                    exam_id: 1
+                    subject: 物理
+                    study_date: '2027-01-08'
+                    exam_date: '2027-01-09'
+                    status: PENDING
+                    days_until_exam: 1
+                    missed_days: 1
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /study-tasks:
+    get:
+      tags: [study-tasks]
+      operationId: listStudyTasks
+      summary: List study tasks of a date
+      description: |
+        查看指定日期的讀書任務。（FR-04）
+        依 BR-05 每天最多一筆，但回傳陣列：沒有任務的日子回傳空陣列，而不是 404。
+      parameters:
+        - name: date
+          in: query
+          required: false
+          description: 要查詢的日期；未提供時為今天
+          schema:
+            type: string
+            format: date
+          example: '2027-01-07'
+      responses:
+        '200':
+          description: Study tasks of the date
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StudyTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /study-tasks/{task_id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    patch:
+      tags: [study-tasks]
+      operationId: updateStudyTaskStatus
+      summary: Mark a study task as done or not done
+      description: 把任務標記為 DONE，或改回 PENDING。（FR-05；BR-10）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudyTaskUpdate'
+            example:
+              status: DONE
+      responses:
+        '200':
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudyTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  parameters:
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      description: 讀書任務的 ID
+      schema:
+        type: integer
+        minimum: 1
+
+  schemas:
+    TaskStatus:
+      type: string
+      description: 任務狀態（BR-10）
+      enum: [PENDING, DONE]
+
+    ExamCreate:
+      type: object
+      description: 登錄考試時 Client 傳入的資料
+      required: [subject, exam_date]
+      additionalProperties: false
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 30
+          pattern: '\S'
+          description: 科目名稱，不可空白（BR-01）；尚未考完的考試中不可重複（BR-03）
+        exam_date:
+          type: string
+          format: date
+          description: 考試日期，須晚於登錄當天（BR-02）
+
+    Exam:
+      type: object
+      description: Server 回傳的考試；id 由 Server 產生
+      required: [id, subject, exam_date]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        subject:
+          type: string
+        exam_date:
+          type: string
+          format: date
+
+    ScheduleRequest:
+      type: object
+      description: 產生排程的條件；可以不傳 Body
+      additionalProperties: false
+      properties:
+        start_date:
+          type: string
+          format: date
+          description: 排程開始日期；未提供時為今天（BR-04）
+
+    ScheduleResult:
+      type: object
+      description: 本次從 start_date 到 end_date 的所有任務（含保留的 DONE 任務）
+      required: [start_date, end_date, tasks]
+      properties:
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+          description: 最晚一科考試的前一天（BR-04）
+        tasks:
+          type: array
+          description: 依 study_date 由早到晚排列，每天一筆（BR-05）
+          items:
+            $ref: '#/components/schemas/StudyTask'
+
+    StudyTask:
+      type: object
+      description: 某一天要讀的一科
+      required: [id, exam_id, subject, study_date, exam_date, status, days_until_exam, missed_days]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        exam_id:
+          type: integer
+          minimum: 1
+        subject:
+          type: string
+          description: 來自所屬 Exam
+        study_date:
+          type: string
+          format: date
+        exam_date:
+          type: string
+          format: date
+          description: 來自所屬 Exam
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        days_until_exam:
+          type: integer
+          minimum: 1
+          description: 計算欄位：exam_date − study_date 的天數（亮點：判斷依據）
+        missed_days:
+          type: integer
+          minimum: 0
+          description: 計算欄位：該科日期早於今天且仍為 PENDING 的任務數（BR-09；亮點：漏讀提醒）
+
+    StudyTaskUpdate:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+
+    ErrorResponse:
+      type: object
+      description: 統一錯誤格式
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 機器可讀的錯誤代碼
+          enum:
+            - INVALID_REQUEST
+            - EXAM_DATE_NOT_IN_FUTURE
+            - DUPLICATE_SUBJECT
+            - NO_UPCOMING_EXAMS
+            - NOT_FOUND
+        message:
+          type: string
+          description: 人類可讀的說明，需指出欄位或違反的規則（NFR-03）
+        traceId:
+          type: string
+          description: 選填，供日後追蹤 Log
+
+  responses:
+    BadRequest:
+      description: |
+        Request 不符合 Contract 或 Business Rules
+        - INVALID_REQUEST：欄位缺漏、型別或日期格式錯誤、科目名稱空白、status 不是 PENDING／DONE（BR-01、BR-10）
+        - EXAM_DATE_NOT_IN_FUTURE：考試日期不晚於今天（BR-02）
+        - NO_UPCOMING_EXAMS：start_date 之後沒有任何考試，無法產生排程（BR-04）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            examDate:
+              summary: 考試日期不晚於今天
+              value:
+                code: EXAM_DATE_NOT_IN_FUTURE
+                message: exam_date must be later than today (2027-01-05)
+            noExams:
+              summary: 沒有可排程的考試
+              value:
+                code: NO_UPCOMING_EXAMS
+                message: no exams after start_date 2027-01-13
+    Conflict:
+      description: 科目名稱與尚未考完的考試重複（BR-03）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: DUPLICATE_SUBJECT
+            message: subject 物理 already has an upcoming exam
+    NotFound:
+      description: 指定的任務不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: NOT_FOUND
+            message: study task 999 not found
